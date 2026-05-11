@@ -1,15 +1,17 @@
 """
 拉取全部在市A股历史价格数据（日K + 月K收盘价），落到 data/price/ 目录。
 
+增量逻辑：
+  - 日K：若文件已存在，读取最后日期，只追加新行
+  - 月K：重算最后一个不完整月起的数据，追加补全
+  - 新股（文件不存在）：拉取全量历史
+
 股票列表从 data/stock_list_listed_all.csv 读取，不重新拉取。
-已存在的文件跳过（增量模式），网络失败自动跳过并记录。
+网络失败自动跳过并记录到 data/price_fetch_failed.txt。
 
 运行方式：
-  # 调试模式（1只股票，2个月）
-  python3 fetch_price.py --debug
-
-  # 全量
-  python3 fetch_price.py
+  python3 fetch_price.py --debug    # 调试：1只股票，最近2个月
+  python3 fetch_price.py            # 全量增量更新
 """
 
 import argparse
@@ -18,8 +20,8 @@ import akshare as ak
 import pandas as pd
 from pathlib import Path
 
-ROOT     = Path(__file__).parent.parent
-DATA_DIR = ROOT / "data"
+ROOT        = Path(__file__).parent.parent
+DATA_DIR    = ROOT / "data"
 DAILY_DIR   = DATA_DIR / "price" / "daily"
 MONTHLY_DIR = DATA_DIR / "price" / "monthly"
 LIST_FILE   = DATA_DIR / "stock_list_listed_all.csv"
@@ -27,7 +29,6 @@ LIST_FILE   = DATA_DIR / "stock_list_listed_all.csv"
 DAILY_DIR.mkdir(parents=True, exist_ok=True)
 MONTHLY_DIR.mkdir(parents=True, exist_ok=True)
 
-# 163数据源前缀
 EXCHANGE_PREFIX = {"SH": "sh", "SZ": "sz", "BJ": "bj"}
 
 
@@ -37,42 +38,91 @@ def load_stock_list() -> pd.DataFrame:
     return df
 
 
-def fetch_daily(symbol_163: str) -> pd.DataFrame:
-    """拉取后复权日K，返回 date/open/high/low/close/volume"""
+def fetch_all_daily(symbol_163: str) -> pd.DataFrame:
+    """从 163 数据源拉取全部后复权日K。"""
     df = ak.stock_zh_a_daily(symbol=symbol_163, adjust="hfq")
     df["date"] = pd.to_datetime(df["date"])
-    return df[["date", "open", "high", "low", "close", "volume"]]
+    return df[["date", "open", "high", "low", "close", "volume"]].sort_values("date")
 
 
-def to_monthly(df_daily: pd.DataFrame) -> pd.DataFrame:
-    """日K → 月K（每月最后一个交易日收盘价）"""
-    df = df_daily.set_index("date").sort_index()
-    monthly = df["close"].resample("ME").last().dropna()
-    monthly.index.name = "date"
-    return monthly.reset_index().rename(columns={"close": "close_monthly"})
+def update_monthly(daily_f: Path, monthly_f: Path, from_date: pd.Timestamp = None):
+    """
+    从 daily CSV 重建月K。
+    from_date：只重算该日期所在月起的数据（增量时传入上次月K最后日期的月初）。
+    """
+    df_daily = pd.read_csv(daily_f, parse_dates=["date"])
+    df_daily = df_daily.set_index("date").sort_index()
+
+    if from_date is not None and monthly_f.exists():
+        # 只重算 from_date 所在月起（避免最后一个月数据不完整被截断）
+        recalc_start = from_date.to_period("M").to_timestamp()
+        new_monthly = (
+            df_daily.loc[recalc_start:, "close"]
+            .resample("ME").last()
+            .dropna()
+            .reset_index()
+            .rename(columns={"close": "close_monthly"})
+        )
+        old_monthly = pd.read_csv(monthly_f, parse_dates=["date"])
+        # 移除旧数据中 >= recalc_start 的行，再追加重算结果
+        old_monthly = old_monthly[old_monthly["date"] < recalc_start]
+        result = pd.concat([old_monthly, new_monthly], ignore_index=True)
+    else:
+        result = (
+            df_daily["close"]
+            .resample("ME").last()
+            .dropna()
+            .reset_index()
+            .rename(columns={"close": "close_monthly"})
+        )
+
+    result.to_csv(monthly_f, index=False)
 
 
-def process_stock(code: str, exchange: str, debug_months: int = None):
-    prefix   = EXCHANGE_PREFIX.get(exchange, "sz")
-    symbol   = f"{prefix}{code}"
-    daily_f  = DAILY_DIR   / f"{code}.csv"
+def process_stock(code: str, exchange: str, debug_months: int = None) -> str:
+    prefix    = EXCHANGE_PREFIX.get(exchange, "sz")
+    symbol    = f"{prefix}{code}"
+    daily_f   = DAILY_DIR   / f"{code}.csv"
     monthly_f = MONTHLY_DIR / f"{code}.csv"
 
-    if daily_f.exists() and monthly_f.exists():
-        return "skip"
+    if daily_f.exists():
+        # ── 增量：只追加新行 ──────────────────────────
+        old_daily = pd.read_csv(daily_f, parse_dates=["date"])
+        last_date = old_daily["date"].max()
 
-    df = fetch_daily(symbol)
+        all_daily = fetch_all_daily(symbol)
 
-    if debug_months:
-        cutoff = df["date"].max() - pd.DateOffset(months=debug_months)
-        df = df[df["date"] >= cutoff]
+        if debug_months:
+            cutoff = all_daily["date"].max() - pd.DateOffset(months=debug_months)
+            all_daily = all_daily[all_daily["date"] >= cutoff]
 
-    df.to_csv(daily_f, index=False)
+        new_rows = all_daily[all_daily["date"] > last_date]
+        if new_rows.empty:
+            return "up-to-date"
 
-    df_monthly = to_monthly(df)
-    df_monthly.to_csv(monthly_f, index=False)
+        new_rows.to_csv(daily_f, mode="a", header=False, index=False)
 
-    return "ok"
+        # 月K：从上次月K最后日期的月初重算
+        if monthly_f.exists():
+            old_monthly = pd.read_csv(monthly_f, parse_dates=["date"])
+            recalc_from = old_monthly["date"].max() if not old_monthly.empty else last_date
+        else:
+            recalc_from = last_date
+
+        update_monthly(daily_f, monthly_f, from_date=recalc_from)
+        return f"appended +{len(new_rows)}rows"
+
+    else:
+        # ── 首次拉取全量 ──────────────────────────────
+        df = fetch_all_daily(symbol)
+
+        if debug_months:
+            cutoff = df["date"].max() - pd.DateOffset(months=debug_months)
+            df = df[df["date"] >= cutoff]
+
+        df.to_csv(daily_f, index=False)
+        update_monthly(daily_f, monthly_f)
+        return "new"
 
 
 def main(debug: bool = False):
@@ -81,40 +131,34 @@ def main(debug: bool = False):
 
     if debug:
         stocks = stocks.head(1)
-        debug_months = 2
-        print(f"调试模式：只处理 {stocks.iloc[0]['code']} {stocks.iloc[0]['name']}，最近 {debug_months} 个月")
-    else:
-        debug_months = None
+        print(f"调试模式：{stocks.iloc[0]['code']} {stocks.iloc[0]['name']}，最近2个月")
 
-    ok_count = skip_count = fail_count = 0
+    counts = {"new": 0, "appended": 0, "up-to-date": 0, "fail": 0}
     failed = []
 
     for i, row in stocks.iterrows():
         code, exchange, name = row["code"], row["exchange"], row["name"]
         try:
-            result = process_stock(code, exchange, debug_months)
-            if result == "skip":
-                skip_count += 1
-                print(f"[{i+1}/{len(stocks)}] {code} {name}  SKIP（已存在）")
-            else:
-                ok_count += 1
-                print(f"[{i+1}/{len(stocks)}] {code} {name}  OK")
+            result = process_stock(code, exchange, debug_months=2 if debug else None)
+            tag = "appended" if result.startswith("appended") else result
+            counts[tag] = counts.get(tag, 0) + 1
+            print(f"[{i+1}/{len(stocks)}] {code} {name:<10}  {result}")
             if not debug:
                 time.sleep(0.3)
         except Exception as e:
-            fail_count += 1
+            counts["fail"] += 1
             failed.append((code, name, str(e)[:80]))
-            print(f"[{i+1}/{len(stocks)}] {code} {name}  FAIL: {str(e)[:60]}")
+            print(f"[{i+1}/{len(stocks)}] {code} {name:<10}  FAIL: {str(e)[:60]}")
 
-    print(f"\n完成：OK={ok_count}  SKIP={skip_count}  FAIL={fail_count}")
+    print(f"\n完成：新增={counts['new']}  追加={counts['appended']}  已最新={counts['up-to-date']}  失败={counts['fail']}")
+
     if failed:
         fail_log = DATA_DIR / "price_fetch_failed.txt"
         with open(fail_log, "w") as f:
             for code, name, err in failed:
                 f.write(f"{code}\t{name}\t{err}\n")
-        print(f"失败记录已写入 {fail_log}")
+        print(f"失败记录 → {fail_log}")
 
-    # 调试时打印结果
     if debug:
         code = stocks.iloc[0]["code"]
         print("\n--- 日K（后5行）---")
@@ -125,6 +169,6 @@ def main(debug: bool = False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--debug", action="store_true", help="调试模式：1只股票2个月数据")
+    parser.add_argument("--debug", action="store_true", help="调试模式：1只股票，最近2个月")
     args = parser.parse_args()
     main(debug=args.debug)
