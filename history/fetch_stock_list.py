@@ -129,6 +129,12 @@ def fetch_delist_sh():
 def fetch_delist_sz():
     print(">>> 深市退市股票...")
     df = ak.stock_info_sz_delist()
+    df.rename(columns={
+        "证券代码":   "code",
+        "证券简称":   "name",
+        "上市日期":   "list_date",
+        "终止上市日期": "delist_date",
+    }, inplace=True)
     df.insert(0, "exchange", "SZ")
     df.insert(0, "status", "退市")
     return save(df, "stock_list_sz_delist.csv")
