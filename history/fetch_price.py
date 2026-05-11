@@ -18,7 +18,7 @@ import akshare as ak
 import pandas as pd
 from pathlib import Path
 
-ROOT     = Path(__file__).parent
+ROOT     = Path(__file__).parent.parent
 DATA_DIR = ROOT / "data"
 DAILY_DIR   = DATA_DIR / "price" / "daily"
 MONTHLY_DIR = DATA_DIR / "price" / "monthly"
