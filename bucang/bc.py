@@ -1,8 +1,10 @@
 
 
 import json
+from pathlib import Path
+
 v_list = []
-with open("bucang/longwin.json", mode="r") as f:
+with open(Path(__file__).parent / "longwin.json", mode="r") as f:
     longwin = json.load(f)
     for composition in longwin["composition"]:
         for compList in composition["compList"]:

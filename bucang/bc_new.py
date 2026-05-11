@@ -22,6 +22,10 @@ import time
 import requests
 from datetime import datetime
 import json
+from pathlib import Path
+
+DATA_DIR = Path(__file__).parent.parent / "data"
+DATA_DIR.mkdir(exist_ok=True)
 
 now = datetime.now()
 end = now.strftime("%Y-%m-%d")
@@ -53,13 +57,13 @@ save_in_file = True
 
 
 def save_file(resp, file_name):
-    with open(f"data/{file_name}.json", mode="w") as f:
+    with open(DATA_DIR / f"{file_name}.json", mode="w") as f:
         json.dump(resp, f, indent=4, ensure_ascii=False)
 
 
 def get_file(file_name):
     resp = {}
-    with open(f"data/{file_name}.json", mode="r") as f:
+    with open(DATA_DIR / f"{file_name}.json", mode="r") as f:
         resp = json.load(f)
     return resp
 
