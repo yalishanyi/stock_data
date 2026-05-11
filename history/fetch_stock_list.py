@@ -78,6 +78,15 @@ def fetch_bj():
     df = ak.stock_info_bj_name_code()
     df.insert(0, "exchange", "BJ")
     df["board"] = "北交所"
+    df.rename(columns={
+        "证券代码": "code",
+        "证券简称": "name",
+        "上市日期": "list_date",
+        "所属行业": "industry",
+        "总股本":   "total_shares",
+        "流通股本": "float_shares",
+        "地区":     "province",
+    }, inplace=True)
     return save(df, "stock_list_bj.csv")
 
 
