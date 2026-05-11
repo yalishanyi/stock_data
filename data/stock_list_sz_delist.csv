@@ -1,4 +1,4 @@
-﻿status,exchange,证券代码,证券简称,上市日期,终止上市日期
+﻿status,exchange,code,name,list_date,delist_date
 退市,SZ,000003,PT金田Ａ,1991-01-14,2002-06-14
 退市,SZ,000005,ST星源,1990-12-10,2024-04-26
 退市,SZ,000013,*ST石化A,1992-05-06,2004-09-20
