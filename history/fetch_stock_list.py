@@ -135,15 +135,48 @@ def fetch_delist_sz():
 
 
 # ─────────────────────────────────────────────────
-# 合并所有在市股票
+# 合并在市股票 → stock_list_listed_all.csv
 # ─────────────────────────────────────────────────
-def merge_listed(frames: list[pd.DataFrame]):
-    cols = ["exchange", "code", "name", "list_date", "board"]
+def merge_listed(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    cols = ["exchange", "code", "name", "list_date", "board", "status"]
+    slices = []
+    for df in frames:
+        if "status" not in df.columns:
+            df = df.copy()
+            df["status"] = "在市"
+        available = [c for c in cols if c in df.columns]
+        slices.append(df[available])
+    df_all = pd.concat(slices, ignore_index=True)
+    df_all.sort_values("code", inplace=True)
+    df_all.reset_index(drop=True, inplace=True)
+    return save(df_all, "stock_list_listed_all.csv")
+
+
+# ─────────────────────────────────────────────────
+# 合并退市股票 → stock_list_delist_all.csv
+# ─────────────────────────────────────────────────
+def merge_delisted(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    cols = ["exchange", "code", "name", "list_date", "delist_date", "status"]
     slices = []
     for df in frames:
         available = [c for c in cols if c in df.columns]
         slices.append(df[available])
     df_all = pd.concat(slices, ignore_index=True)
+    df_all.sort_values("code", inplace=True)
+    df_all.reset_index(drop=True, inplace=True)
+    return save(df_all, "stock_list_delist_all.csv")
+
+
+# ─────────────────────────────────────────────────
+# 全量合并 → stock_list_all.csv
+# ─────────────────────────────────────────────────
+def merge_all(listed_df: pd.DataFrame, delisted_df: pd.DataFrame):
+    cols = ["exchange", "code", "name", "list_date", "status"]
+    df_all = pd.concat(
+        [listed_df[[c for c in cols if c in listed_df.columns]],
+         delisted_df[[c for c in cols if c in delisted_df.columns]]],
+        ignore_index=True,
+    )
     df_all.sort_values("code", inplace=True)
     df_all.reset_index(drop=True, inplace=True)
     return save(df_all, "stock_list_all.csv")
@@ -164,8 +197,15 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"    [SKIP] {label} 获取失败: {e}\n")
 
-    if listed:
-        merge_listed(listed)
+    listed_df   = merge_listed(listed)   if listed   else None
+    delisted_df = merge_delisted(delisted) if delisted else None
+
+    if listed_df is not None and delisted_df is not None:
+        merge_all(listed_df, delisted_df)
+    elif listed_df is not None:
+        merge_all(listed_df, pd.DataFrame(columns=["exchange", "code", "name", "list_date", "status"]))
+    elif delisted_df is not None:
+        merge_all(pd.DataFrame(columns=["exchange", "code", "name", "list_date", "status"]), delisted_df)
 
     print(f"\n完成，data/ 目录文件：")
     for f in sorted(DATA_DIR.glob("stock_list*.csv")):
